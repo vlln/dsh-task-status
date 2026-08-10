@@ -12,15 +12,17 @@
 //   推进**每任务唯一共享游标**（官方 `task_output` 工具走同一游标）。
 // 因此"非消耗式 peek 全文"在 0809 上**不存在**。
 //
-// 竞争解法（tee 补丁）：apply 时给 `ctx.tasks.read` 打**观察补丁**——任何
-// 调用（官方 task_output 工具 / 本插件自读 / 其他消费者）拿到的增量都即时
-// 累积进本插件的 shadow 缓冲。效果：
-// - 官方工具每次 read 拿到它该拿的增量，**零干扰**（补丁原样透传结果）；
-// - 本插件 tail 路由返回**累积全文**（已读全历史的并集），full: true 契约。
-// 无重复（每次 read 都是自上次以来新增）、无丢失（每个增量恰好进缓冲一次）。
-// 唯一取舍：被本插件抢先读走的增量，官方工具不再能单独重放——但官方语义
-// 本就是增量读取（模型每次拿"新增"），感知无影响。终态 read 会置 reported：
-// 自读仅发生在用户展开活跃任务时，窗口有限（见 readTaskOutput 注释）。
+// 竞争解法（镜像补丁）：给 `ctx.tasks.read` 打**镜像优先补丁**——
+// - 官方 read：缓冲里有"官方尚未消费"的增量 → **从缓冲切片返回**（不推进
+//   producer 游标，零消耗）；无货 → **回退直读**（原语义，消耗 + 累积 +
+//   推进官方镜像游标）。官方看到的增量序列与无插件时**逐字节一致**。
+// - 本插件自读：直接调底层 rawRead（绕过补丁，producer 游标唯一推进者）
+//   + 累积进缓冲；tail 路由返回累积全文（full: true 契约）。
+// 效果：官方零干扰（折叠时恒直读、展开时镜像=直读视图）、插件 tail 完整
+// 实时（≤1s 滞后）、无重复（官方镜像游标只前移）、无丢失（缓冲 = 全部已读
+// 增量顺序累积）。唯一残留：producer 游标仍被插件推进（消耗的唯一性），
+// 但官方感知无差异。镜像分支用 get 取快照（不置 reported），终态通知仍由
+// 官方 onTaskDone/wait 交付。
 
 /** 只读任务列表路由（与 client bundle 轮询地址一致）。 */
 export const TASKS_PATH = '/plugins/dsh-task-status/tasks'
@@ -31,8 +33,21 @@ export const OUTPUT_PATH = '/plugins/dsh-task-status/output'
 /** shadow 缓冲上限：超限丢最旧（tail 保尾），防长任务无界增长。 */
 const OUTPUT_BUF_MAX = 64 * 1024
 
-/** taskId -> 累积输出（本插件 read 到的增量影子，与官方游标同步推进）。 */
+/** taskId -> 累积输出（全部已读增量的顺序累积：插件自读 + 官方直读）。 */
 const outputBuffers = new Map()
+
+/** taskId -> 官方 read 已消费的缓冲长度（镜像游标，仅补丁维护、只前移）。 */
+const officialConsumed = new Map()
+
+/** 底层原始 tasks.read（apply 时绑定）；插件自读直接调它绕过补丁。 */
+let rawRead = undefined
+
+/** 把一段增量追加进 shadow 缓冲（保尾截断）。 */
+function accumulate(id, text) {
+  if (typeof text !== 'string' || text.length === 0) return
+  const prev = outputBuffers.get(id) ?? ''
+  outputBuffers.set(id, (prev + text).slice(-OUTPUT_BUF_MAX))
+}
 
 /** Cordis 插件名。 */
 export const name = 'task-status'
@@ -75,10 +90,10 @@ function collectTasks(ctx) {
 }
 
 /**
- * 读取一个任务的输出 tail（tee 版）：先按 agent 遍历找到任务的 owner（其
- * `list(agent)` 含该 id），用该 agent 身份 `read` 拿增量——read 已被 tee
- * 补丁观察，增量自动累积进 shadow 缓冲；unowned 任务直接 read。返回**累积
- * 全文**（客户端整段替换）。
+ * 读取一个任务的输出 tail（镜像版）：先按 agent 遍历找到任务的 owner（其
+ * `list(agent)` 含该 id），用该 agent 身份**直接调底层 rawRead**（绕过镜像
+ * 补丁——本插件是 producer 游标的唯一主动推进者），增量累积进 shadow 缓冲；
+ * unowned 任务直接 rawRead。返回**累积全文**（客户端整段替换）。
  *
  * 自读仅发生在用户展开任务时；展开期间任务终态会使 read 置 `reported`
  * （官方"首次消耗式 read 交付终态通知"语义被提前触发）——窗口有限、可接受。
@@ -97,28 +112,36 @@ function readTaskOutput(ctx, id) {
       break
     }
   }
-  const read = caller === undefined ? tasks.read(id) : tasks.read(id, caller)
+  const read = caller === undefined ? rawRead(id) : rawRead(id, caller)
+  accumulate(id, read?.text)
   return { text: outputBuffers.get(id) ?? '', snapshot: read.snapshot }
 }
 
 /**
- * 插件主体：打 read tee 补丁 + 注册任务列表与输出读取路由。tee 补丁观察
- * 所有 `tasks.read` 调用（原样透传结果，零干扰），增量累积进 shadow 缓冲；
- * dispose 时恢复原方法。路由 handler 异常以 500 返回，客户端轮询吞掉瞬态错误。
+ * 插件主体：打 read 镜像补丁 + 注册任务列表与输出读取路由。镜像补丁让官方
+ * read 优先从缓冲切片（零消耗），无货回退直读（原语义）；dispose 时恢复
+ * 原方法。路由 handler 异常以 500 返回，客户端轮询吞掉瞬态错误。
  * @param ctx - host cordis context。
  */
 export function apply(ctx) {
   ctx.effect(() => {
-    // tee 补丁：观察 read（调用方无关），增量即时累积；结果原样透传。
-    const originalRead = ctx.tasks.read.bind(ctx.tasks)
-    ctx.tasks.read = (...args) => {
-      const result = originalRead(...args)
-      const text = result?.text
-      if (typeof text === 'string' && text.length > 0) {
-        const prev = outputBuffers.get(args[0]) ?? ''
-        outputBuffers.set(args[0], (prev + text).slice(-OUTPUT_BUF_MAX))
-      }
-      return result
+    // 绑定底层原始 read（插件自读经 rawRead 绕过补丁）。
+    rawRead = ctx.tasks.read.bind(ctx.tasks)
+    // 镜像补丁（镜像 + 直读补最新）：官方 read = 缓冲中"官方未消费"的增量
+    // （别人已读的，镜像返回，不重复消耗 producer 游标）+ 直读"producer 未读"
+    // 的最新增量（正常消耗）。官方视图完整无滞后、无重复；每个增量恰好被
+    // 消耗一次（插件自读或官方直读），双方都能看到全量。
+    ctx.tasks.read = (id, caller) => {
+      const buf = outputBuffers.get(id)
+      const consumed = officialConsumed.get(id) ?? 0
+      const mirror = buf !== undefined && buf.length > consumed ? buf.slice(consumed) : ''
+      // 直读补最新：消耗 producer 游标（拿自官方上次 read 以来新产出的增量），
+      // 同时累积进缓冲（插件视图也完整）。
+      const result = rawRead(id, caller)
+      accumulate(id, result?.text)
+      const text = mirror + (result?.text ?? '')
+      officialConsumed.set(id, (buf?.length ?? 0) + (typeof result?.text === 'string' ? result.text.length : 0))
+      return { text, snapshot: result.snapshot }
     }
     const disposeTasks = ctx.httpServer.register({
       kind: 'exact',
@@ -163,9 +186,10 @@ export function apply(ctx) {
       },
     })
     return () => {
-      ctx.tasks.read = originalRead
+      ctx.tasks.read = rawRead
+      rawRead = undefined
       disposeTasks()
       disposeOutput()
     }
-  }, 'task-status: tee tasks.read + tasks/output routes')
+  }, 'task-status: mirror tasks.read + tasks/output routes')
 }
