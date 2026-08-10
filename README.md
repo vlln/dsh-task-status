@@ -10,7 +10,7 @@
 
 ## 效果
 
-![task-status 状态条与展开输出](docs/preview/task-status.png)
+![task-status（真实运行截图：任务行 + 展开输出 tail）](docs/preview/task-status.png)
 
 ## 能力
 
