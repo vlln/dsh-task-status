@@ -5,12 +5,29 @@
 // 任务可见性：`tasks.list(caller)` 的 owner fence 让无 agent 身份的调用方
 // 只看到 unowned 任务，所以这里遍历 `ctx.agents.list()` 逐个取 owned 任务
 // 再并上 unowned（按 id 去重）——这是示例演示的"自造缝"替代 `listOwned`。
+//
+// 输出 tail 的现实约束（0809 官方 tasks API）：
+// - `tasks.get(id)` 是非消耗快照，但 TaskSnapshot **不含输出文本**（仅元数据）；
+// - 唯一输出通道是 `tasks.read(id)`：stream 任务返回"上次读取以来的增量"并
+//   推进**每任务唯一共享游标**（官方 `task_output` 工具走同一游标）。
+// 因此"非消耗式 peek 全文"在 0809 上**不存在**。本插件退而求其次：
+// Node half 对**用户正在展开的任务**调用 read 拿增量，累积进本插件的
+// shadow 缓冲（服务端），tail 路由返回累积全文（full: true，客户端整段替换）。
+// 竞争语义：与官方 task_output 工具共享游标——两者并发读同一任务时，各自
+// 只看到自己读到的片段（这是 0809 API 的固有语义，非本插件缺陷）；手动测试
+// （无并发模型读取）下 tail 完整。展开结束即停止读取，竞争窗口最小。
 
 /** 只读任务列表路由（与 client bundle 轮询地址一致）。 */
 export const TASKS_PATH = '/plugins/dsh-task-status/tasks'
 
-/** 任务输出读取路由（tail：每次返回保留输出全文，非消耗式）。 */
+/** 任务输出读取路由（tail：返回 shadow 缓冲累积全文，full: true 契约）。 */
 export const OUTPUT_PATH = '/plugins/dsh-task-status/output'
+
+/** shadow 缓冲上限：超限丢最旧（tail 保尾），防长任务无界增长。 */
+const OUTPUT_BUF_MAX = 64 * 1024
+
+/** taskId -> 累积输出（本插件 read 到的增量影子，与官方游标同步推进）。 */
+const outputBuffers = new Map()
 
 /** Cordis 插件名。 */
 export const name = 'task-status'
@@ -53,25 +70,32 @@ function collectTasks(ctx) {
 }
 
 /**
- * 读取一个任务的输出 tail（非消耗式）。`tasks.peek(id, caller)` 的 owner
- * fence 与 `read` 一致——先按 agent 遍历找到任务的 owner（其 `list(agent)`
- * 含该 id），用该 agent 身份 peek；unowned 直接 peek。
+ * 读取一个任务的输出 tail（0809 现实版）：先按 agent 遍历找到任务的 owner
+ * （其 `list(agent)` 含该 id），用该 agent 身份 `read` 拿增量并追加进 shadow
+ * 缓冲；unowned 任务直接 read。每次返回**累积全文**（客户端整段替换）。
  *
- * 与 `tasks.read` 的区别：peek 不推进 per-task 游标，也不标记 reported——
- * 自动轮询 tail 不再与官方 `task_output` 工具的读取竞争（官方工具读到的
- * 增量不受影响），终态通知仍由首次消耗式 read/wait 交付。
+ * 注意：`read` 是消耗式（推进共享游标），且对终态任务置 `reported`——本路由
+ * 只服务 UI 正在展开的活跃任务，终态后 UI 下轮即隐藏，竞争窗口有限。
  * @param ctx - host cordis context。
  * @param id - 任务 id。
- * @returns 当前保留输出 text 与快照；任务不存在返回 null。
+ * @returns 累积 text 与读后快照；任务不存在时 read 抛错（由 handler 转 500）。
  */
 function readTaskOutput(ctx, id) {
+  // 先确认任务存在（列表视图非消耗式），未知 id 直接 404，避免消耗式 read 抛错。
+  if (!collectTasks(ctx).some(snapshot => snapshot.id === id)) return null
   const tasks = ctx.tasks
+  let caller
   for (const agent of ctx.agents.list()) {
     if (tasks.list(agent).some(snapshot => snapshot.id === id)) {
-      return { text: tasks.peek(id, agent).text, snapshot: toWire(tasks.list(agent).find(s => s.id === id)) }
+      caller = agent
+      break
     }
   }
-  return { text: tasks.peek(id).text, snapshot: toWire(tasks.list().find(s => s.id === id)) }
+  const read = caller === undefined ? tasks.read(id) : tasks.read(id, caller)
+  const prev = outputBuffers.get(id) ?? ''
+  const next = (prev + read.text).slice(-OUTPUT_BUF_MAX)
+  outputBuffers.set(id, next)
+  return { text: next, snapshot: read.snapshot }
 }
 
 /**

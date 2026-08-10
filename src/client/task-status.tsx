@@ -32,6 +32,9 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 /** Node half 只读任务路由（与 examples/task-status/index.mjs 的 TASKS_PATH 一致）。 */
 const TASKS_PATH = '/plugins/dsh-task-status/tasks'
 
+/** Node half 任务输出读取路由（与 src/index.mjs 的 OUTPUT_PATH 一致）。 */
+const OUTPUT_PATH = '/plugins/dsh-task-status/output'
+
 /** 轮询间隔：活跃任务状态条不需要亚秒刷新。 */
 const POLL_MS = 1000
 
@@ -112,13 +115,12 @@ function useSessionTasks(sessionId: string): WireTask[] {
 }
 
 /**
- * 任务输出 tail：展开任务时**自动轮询** Node half 输出路由。路由走宿主
- * `tasks.peek`（非消耗式）并带 `full: true`——每次返回当前保留输出全文，
- * 客户端**整段替换**渲染（tail -f 效果，无需按钮）。peek 不推进 per-task
- * 游标、不标记 reported：自动轮询与官方 `task_output` 工具的读取零竞争
- * （官方工具读到的增量不受影响），终态通知仍由首次消耗式 read/wait 交付。
- * 兼容旧路由（无 `full` 标志 = 消耗式增量契约）：此时**追加**增量而非替换，
- * 展开期间输出可累积显示。
+ * 任务输出 tail：展开任务时**自动轮询** Node half 输出路由。Node half 用
+ * 0809 唯一输出通道 `tasks.read`（消耗式）拿增量、服务端累积成 shadow 缓冲，
+ * 路由带 `full: true` 返回累积全文——客户端**整段替换**渲染（tail -f 效果，
+ * 无需按钮）。与官方 `task_output` 工具共享每任务游标：并发读同一任务时双方
+ * 各见片段（0809 API 固有语义，见 src/index.mjs 注释）；仅展开期间轮询，
+ * 竞争窗口最小。兼容旧路由（无 `full` 标志 = 增量契约）：此时**追加**。
  * @param taskId - 当前展开的任务 id；null 时不轮询。
  * @returns 当前输出文本（整段替换或增量追加后）。
  */
