@@ -250,7 +250,17 @@ export function TaskStatusBar(
           <div style={{ padding: '0 12px 8px 34px', fontSize: 12, lineHeight: '18px', color: 'var(--dsw-alias-label-tertiary)', display: 'flex', flexDirection: 'column', gap: 2 }}>
             {task.detail !== undefined && <span>详情：{task.detail}</span>}
             {taskOutput !== '' && (
-              <div style={{ margin: '2px 0 0', fontSize: 11, lineHeight: '16px', fontFamily: 'var(--dsh-code-font-family, ui-monospace, monospace)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{taskOutput}</div>
+              // 输出区上限：最多 10 行（160px），超出变滚动条（tail 保尾可回看）。
+              <div style={{
+                margin: '2px 0 0',
+                fontSize: 11,
+                lineHeight: '16px',
+                fontFamily: 'var(--dsh-code-font-family, ui-monospace, monospace)',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+                maxHeight: 160,
+                overflowY: 'auto',
+              }}>{taskOutput}</div>
             )}
           </div>
         )}
