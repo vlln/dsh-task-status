@@ -115,12 +115,12 @@ function useSessionTasks(sessionId: string): WireTask[] {
 }
 
 /**
- * 任务输出 tail：展开任务时**自动轮询** Node half 输出路由。Node half 用
- * 0809 唯一输出通道 `tasks.read`（消耗式）拿增量、服务端累积成 shadow 缓冲，
- * 路由带 `full: true` 返回累积全文——客户端**整段替换**渲染（tail -f 效果，
- * 无需按钮）。与官方 `task_output` 工具共享每任务游标：并发读同一任务时双方
- * 各见片段（0809 API 固有语义，见 src/index.mjs 注释）；仅展开期间轮询，
- * 竞争窗口最小。兼容旧路由（无 `full` 标志 = 增量契约）：此时**追加**。
+ * 任务输出 tail：展开任务时**自动轮询** Node half 输出路由。Node half 给
+ * `ctx.tasks.read` 打了 tee 补丁（见 src/index.mjs）——任何 read（官方
+ * `task_output` 工具或本插件自读）的增量都累积进服务端 shadow 缓冲，路由带
+ * `full: true` 返回累积全文——客户端**整段替换**渲染（tail -f 效果，无需
+ * 按钮）。tee 使官方工具读取零干扰，本插件看到已读全历史（无重复无丢失）。
+ * 兼容旧路由（无 `full` 标志 = 增量契约）：此时**追加**。
  * @param taskId - 当前展开的任务 id；null 时不轮询。
  * @returns 当前输出文本（整段替换或增量追加后）。
  */

@@ -10,12 +10,17 @@
 // - `tasks.get(id)` 是非消耗快照，但 TaskSnapshot **不含输出文本**（仅元数据）；
 // - 唯一输出通道是 `tasks.read(id)`：stream 任务返回"上次读取以来的增量"并
 //   推进**每任务唯一共享游标**（官方 `task_output` 工具走同一游标）。
-// 因此"非消耗式 peek 全文"在 0809 上**不存在**。本插件退而求其次：
-// Node half 对**用户正在展开的任务**调用 read 拿增量，累积进本插件的
-// shadow 缓冲（服务端），tail 路由返回累积全文（full: true，客户端整段替换）。
-// 竞争语义：与官方 task_output 工具共享游标——两者并发读同一任务时，各自
-// 只看到自己读到的片段（这是 0809 API 的固有语义，非本插件缺陷）；手动测试
-// （无并发模型读取）下 tail 完整。展开结束即停止读取，竞争窗口最小。
+// 因此"非消耗式 peek 全文"在 0809 上**不存在**。
+//
+// 竞争解法（tee 补丁）：apply 时给 `ctx.tasks.read` 打**观察补丁**——任何
+// 调用（官方 task_output 工具 / 本插件自读 / 其他消费者）拿到的增量都即时
+// 累积进本插件的 shadow 缓冲。效果：
+// - 官方工具每次 read 拿到它该拿的增量，**零干扰**（补丁原样透传结果）；
+// - 本插件 tail 路由返回**累积全文**（已读全历史的并集），full: true 契约。
+// 无重复（每次 read 都是自上次以来新增）、无丢失（每个增量恰好进缓冲一次）。
+// 唯一取舍：被本插件抢先读走的增量，官方工具不再能单独重放——但官方语义
+// 本就是增量读取（模型每次拿"新增"），感知无影响。终态 read 会置 reported：
+// 自读仅发生在用户展开活跃任务时，窗口有限（见 readTaskOutput 注释）。
 
 /** 只读任务列表路由（与 client bundle 轮询地址一致）。 */
 export const TASKS_PATH = '/plugins/dsh-task-status/tasks'
@@ -70,15 +75,16 @@ function collectTasks(ctx) {
 }
 
 /**
- * 读取一个任务的输出 tail（0809 现实版）：先按 agent 遍历找到任务的 owner
- * （其 `list(agent)` 含该 id），用该 agent 身份 `read` 拿增量并追加进 shadow
- * 缓冲；unowned 任务直接 read。每次返回**累积全文**（客户端整段替换）。
+ * 读取一个任务的输出 tail（tee 版）：先按 agent 遍历找到任务的 owner（其
+ * `list(agent)` 含该 id），用该 agent 身份 `read` 拿增量——read 已被 tee
+ * 补丁观察，增量自动累积进 shadow 缓冲；unowned 任务直接 read。返回**累积
+ * 全文**（客户端整段替换）。
  *
- * 注意：`read` 是消耗式（推进共享游标），且对终态任务置 `reported`——本路由
- * 只服务 UI 正在展开的活跃任务，终态后 UI 下轮即隐藏，竞争窗口有限。
+ * 自读仅发生在用户展开任务时；展开期间任务终态会使 read 置 `reported`
+ * （官方"首次消耗式 read 交付终态通知"语义被提前触发）——窗口有限、可接受。
  * @param ctx - host cordis context。
  * @param id - 任务 id。
- * @returns 累积 text 与读后快照；任务不存在时 read 抛错（由 handler 转 500）。
+ * @returns 累积 text 与读后快照；任务不存在返回 null。
  */
 function readTaskOutput(ctx, id) {
   // 先确认任务存在（列表视图非消耗式），未知 id 直接 404，避免消耗式 read 抛错。
@@ -92,19 +98,28 @@ function readTaskOutput(ctx, id) {
     }
   }
   const read = caller === undefined ? tasks.read(id) : tasks.read(id, caller)
-  const prev = outputBuffers.get(id) ?? ''
-  const next = (prev + read.text).slice(-OUTPUT_BUF_MAX)
-  outputBuffers.set(id, next)
-  return { text: next, snapshot: read.snapshot }
+  return { text: outputBuffers.get(id) ?? '', snapshot: read.snapshot }
 }
 
 /**
- * 插件主体：注册任务列表与输出读取路由。路由只读、无副作用；handler 异常
- * 以 500 返回，客户端轮询吞掉瞬态错误。
+ * 插件主体：打 read tee 补丁 + 注册任务列表与输出读取路由。tee 补丁观察
+ * 所有 `tasks.read` 调用（原样透传结果，零干扰），增量累积进 shadow 缓冲；
+ * dispose 时恢复原方法。路由 handler 异常以 500 返回，客户端轮询吞掉瞬态错误。
  * @param ctx - host cordis context。
  */
 export function apply(ctx) {
   ctx.effect(() => {
+    // tee 补丁：观察 read（调用方无关），增量即时累积；结果原样透传。
+    const originalRead = ctx.tasks.read.bind(ctx.tasks)
+    ctx.tasks.read = (...args) => {
+      const result = originalRead(...args)
+      const text = result?.text
+      if (typeof text === 'string' && text.length > 0) {
+        const prev = outputBuffers.get(args[0]) ?? ''
+        outputBuffers.set(args[0], (prev + text).slice(-OUTPUT_BUF_MAX))
+      }
+      return result
+    }
     const disposeTasks = ctx.httpServer.register({
       kind: 'exact',
       path: TASKS_PATH,
@@ -148,8 +163,9 @@ export function apply(ctx) {
       },
     })
     return () => {
+      ctx.tasks.read = originalRead
       disposeTasks()
       disposeOutput()
     }
-  }, 'task-status: tasks + output routes')
+  }, 'task-status: tee tasks.read + tasks/output routes')
 }
