@@ -1,0 +1,4 @@
+# dsh-task-status bundle：向组合挂 Node half（数据路由）
+- insert:
+    - id: task-status
+      name: '@dsh-external/dsh-task-status'

@@ -1,0 +1,35 @@
+{
+  "name": "@dsh-external/dsh-task-status",
+  "description": "后台任务状态条——对话输入区上方的任务进度 UI（官方 dock 槽 + Node 轮询路由）",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.mjs",
+  "exports": {
+    ".": {
+      "default": "./lib/index.mjs"
+    },
+    "./client": "./lib/task-status.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "dshClient": {
+    "inject": [
+      "@deepseek-ai/dsh-client-runtime",
+      "@deepseek-ai/dsh-client-ui-slots"
+    ],
+    "platform": "web"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-client-runtime": "^0.0.1",
+    "@deepseek-ai/dsh-client-ui-primitives": "^0.0.1",
+    "@deepseek-ai/dsh-client-ui-slots": "^0.0.1",
+    "cordis": "^4.0.0-rc.7",
+    "react": "^18.2.0"
+  }
+}
