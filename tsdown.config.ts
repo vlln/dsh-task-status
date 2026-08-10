@@ -1,4 +1,4 @@
-/** dsh-task-status 双 half 构建：Node 数据路由 + 官方 client bundle。 */
+/** dsh-task-status 双 half 构建：Node（esm）+ 官方 client bundle（cjs，__ModuleLoader__ 契约）。 */
 
 export default [
   {
@@ -10,14 +10,19 @@ export default [
     clean: true,
   },
   {
-    entry: ['src/client/task-status.tsx'],
-    format: 'esm',
-    platform: 'browser',
-    target: 'es2022',
+    name: '@dsh-external/dsh-task-status/client',
+    entry: { client: 'src/client/task-status.tsx' },
     outDir: 'lib',
-    // 官方 client 契约：__ModuleLoader__.load({id, factory})；外部走官方模块表
+    format: 'cjs',
+    platform: 'browser',
+    dts: false,
+    clean: false,
     external: [/@deepseek-ai\/dsh-client-/, 'react', 'react-dom'],
-    banner: 'window.__ModuleLoader__.load({ id: "@dsh-external/dsh-task-status", factory: (require) => {',
-    footer: 'return module.exports; } });',
+    outputOptions: {
+      entryFileNames: 'client.js',
+      banner: 'window.__ModuleLoader__.load({ id: "@dsh-external/dsh-task-status", factory: (require) => {',
+      footer: 'return module.exports; } });',
+      intro: 'var module = { exports: {} }; var exports = module.exports;',
+    },
   },
 ]
