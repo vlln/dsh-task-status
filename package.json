@@ -30,8 +30,7 @@
     "react": "^18.2.0"
   },
   "scripts": {
-    "build": "tsdown --config ./tsdown.config.ts",
-    "prepare": "tsdown --config ./tsdown.config.ts"
+    "build": "tsdown --config ./tsdown.config.ts"
   },
   "devDependencies": {
     "tsdown": "0.22.2"
