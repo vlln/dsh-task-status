@@ -35,14 +35,13 @@
 
 ## 安装
 
-```sh
-# 1. 克隆并构建（lib/ 不入库，构建产物在本地才可安装）
-git clone https://github.com/dsh-external/dsh-task-status
-cd dsh-task-status && pnpm install && pnpm run build
+**推荐：git 源一行安装**（构建产物已入库，git 源不触发构建）：
 
-# 2. 挂载到 web profile（<包路径> = 含 dsh.bundle 且构建产物在库的目录）
-dsh plugin --profile web add /path/to/dsh-task-status
+```sh
+dsh plugin --profile web add "github:dsh-external/dsh-task-status#main"
 ```
+
+或本地目录（有源码时）：`git clone` 后 `cd dsh-task-status && dsh plugin --profile web add .`。
 
 装完 **重启 web** 生效；设置页「插件」面板可停用/启用。
 
