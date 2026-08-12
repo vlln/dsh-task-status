@@ -1,18 +1,18 @@
 // vlln/task-status Node half：自造数据通道——注册一个只读 JSON 路由，
-// 轮询时返回宿主 `ctx.tasks` 的当前任务快照。不依赖官方推送帧（useTasks /
+// 轮询时返回宿主 `ctx.jobs` 的当前任务快照。不依赖官方推送帧（useTasks /
 // task/snapshot）：客户端每 1s fetch 本路由刷新，官方树零改动。
 //
-// 任务可见性：`tasks.list(caller)` 的 owner fence 让无 agent 身份的调用方
+// 任务可见性：`jobs.list(caller)` 的 owner fence 让无 agent 身份的调用方
 // 只看到 unowned 任务，所以这里遍历 `ctx.agents.list()` 逐个取 owned 任务
 // 再并上 unowned（按 id 去重）——这是示例演示的"自造缝"替代 `listOwned`。
 //
-// 输出 tail 的现实约束（0809 官方 tasks API）：
-// - `tasks.get(id)` 是非消耗快照，但 TaskSnapshot **不含输出文本**（仅元数据）；
-// - 唯一输出通道是 `tasks.read(id)`：stream 任务返回"上次读取以来的增量"并
+// 输出 tail 的现实约束（官方 jobs API）：
+// - `jobs.get(id)` 是非消耗快照，但 JobSnapshot **不含输出文本**（仅元数据）；
+// - 唯一输出通道是 `jobs.read(id)`：stream 任务返回"上次读取以来的增量"并
 //   推进**每任务唯一共享游标**（官方 `task_output` 工具走同一游标）。
 // 因此"非消耗式 peek 全文"在 0809 上**不存在**。
 //
-// 竞争解法（镜像补丁）：给 `ctx.tasks.read` 打**镜像优先补丁**——
+// 竞争解法（镜像补丁）：给 `ctx.jobs.read` 打**镜像优先补丁**——
 // - 官方 read：缓冲里有"官方尚未消费"的增量 → **从缓冲切片返回**（不推进
 //   producer 游标，零消耗）；无货 → **回退直读**（原语义，消耗 + 累积 +
 //   推进官方镜像游标）。官方看到的增量序列与无插件时**逐字节一致**。
@@ -22,7 +22,7 @@
 // 实时（≤1s 滞后）、无重复（官方镜像游标只前移）、无丢失（缓冲 = 全部已读
 // 增量顺序累积）。唯一残留：producer 游标仍被插件推进（消耗的唯一性），
 // 但官方感知无差异。镜像分支用 get 取快照（不置 reported），终态通知仍由
-// 官方 onTaskDone/wait 交付。
+// 官方 onJobDone/wait 交付。
 
 /** 只读任务列表路由（与 client bundle 轮询地址一致）。 */
 export const TASKS_PATH = '/plugins/dsh-task-status/tasks'
@@ -39,7 +39,7 @@ const outputBuffers = new Map()
 /** taskId -> 官方 read 已消费的缓冲长度（镜像游标，仅补丁维护、只前移）。 */
 const officialConsumed = new Map()
 
-/** 底层原始 tasks.read（apply 时绑定）；插件自读直接调它绕过补丁。 */
+/** 底层原始 jobs.read（apply 时绑定）；插件自读直接调它绕过补丁。 */
 let rawRead = undefined
 
 /** 把一段增量追加进 shadow 缓冲（保尾截断）。 */
@@ -53,7 +53,7 @@ function accumulate(id, text) {
 export const name = 'task-status'
 
 /** 所需服务：web 形状的 HTTP 载体 + 任务注册表 + agent 注册表。 */
-export const inject = ['httpServer', 'tasks', 'agents']
+export const inject = ['webServer', 'jobs', 'agents']
 
 /** 裁剪任务快照到 wire 视图（内部记账不跨线；owner 只投影 session id）。 */
 function toWire(snapshot) {
@@ -71,17 +71,17 @@ function toWire(snapshot) {
 
 /** 收集宿主全部任务：owned（按 agent 遍历，绕过 owner fence）+ unowned，按 id 去重。 */
 function collectTasks(ctx) {
-  const tasks = ctx.tasks
+  const jobs = ctx.jobs
   const seen = new Set()
   const out = []
   for (const agent of ctx.agents.list()) {
-    for (const snapshot of tasks.list(agent)) {
+    for (const snapshot of jobs.list(agent)) {
       if (snapshot.ownerSession === undefined || seen.has(snapshot.id)) continue
       seen.add(snapshot.id)
       out.push(toWire(snapshot))
     }
   }
-  for (const snapshot of tasks.list()) {
+  for (const snapshot of jobs.list()) {
     if (seen.has(snapshot.id)) continue
     seen.add(snapshot.id)
     out.push(toWire(snapshot))
@@ -104,10 +104,10 @@ function collectTasks(ctx) {
 function readTaskOutput(ctx, id) {
   // 先确认任务存在（列表视图非消耗式），未知 id 直接 404，避免消耗式 read 抛错。
   if (!collectTasks(ctx).some(snapshot => snapshot.id === id)) return null
-  const tasks = ctx.tasks
+  const jobs = ctx.jobs
   let caller
   for (const agent of ctx.agents.list()) {
-    if (tasks.list(agent).some(snapshot => snapshot.id === id)) {
+    if (jobs.list(agent).some(snapshot => snapshot.id === id)) {
       caller = agent
       break
     }
@@ -126,12 +126,12 @@ function readTaskOutput(ctx, id) {
 export function apply(ctx) {
   ctx.effect(() => {
     // 绑定底层原始 read（插件自读经 rawRead 绕过补丁）。
-    rawRead = ctx.tasks.read.bind(ctx.tasks)
+    rawRead = ctx.jobs.read.bind(ctx.jobs)
     // 镜像补丁（镜像 + 直读补最新）：官方 read = 缓冲中"官方未消费"的增量
     // （别人已读的，镜像返回，不重复消耗 producer 游标）+ 直读"producer 未读"
     // 的最新增量（正常消耗）。官方视图完整无滞后、无重复；每个增量恰好被
     // 消耗一次（插件自读或官方直读），双方都能看到全量。
-    ctx.tasks.read = (id, caller) => {
+    ctx.jobs.read = (id, caller) => {
       const buf = outputBuffers.get(id)
       const consumed = officialConsumed.get(id) ?? 0
       const mirror = buf !== undefined && buf.length > consumed ? buf.slice(consumed) : ''
@@ -143,7 +143,7 @@ export function apply(ctx) {
       officialConsumed.set(id, (buf?.length ?? 0) + (typeof result?.text === 'string' ? result.text.length : 0))
       return { text, snapshot: result.snapshot }
     }
-    const disposeTasks = ctx.httpServer.register({
+    const disposeTasks = ctx.webServer.register({
       kind: 'exact',
       path: TASKS_PATH,
       handler: async (_req, res) => {
@@ -157,7 +157,7 @@ export function apply(ctx) {
         }
       },
     })
-    const disposeOutput = ctx.httpServer.register({
+    const disposeOutput = ctx.webServer.register({
       kind: 'exact',
       path: OUTPUT_PATH,
       handler: async (req, res) => {
@@ -186,10 +186,10 @@ export function apply(ctx) {
       },
     })
     return () => {
-      ctx.tasks.read = rawRead
+      ctx.jobs.read = rawRead
       rawRead = undefined
       disposeTasks()
       disposeOutput()
     }
-  }, 'task-status: mirror tasks.read + tasks/output routes')
+  }, 'task-status: mirror jobs.read + jobs/output routes')
 }
