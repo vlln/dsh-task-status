@@ -3,7 +3,7 @@
 <p align="center">后台任务状态条：对话页输入区上方的任务进度 UI——运行中计数 + 展开详情 + 实时输出 tail</p>
 
 <p align="center">
-  <img src="https://badgen.net/badge/license/BSD-3-Clause/blue" alt="license">
+  <img src="https://badgen.net/badge/license/MIT/green" alt="license">
 </p>
 
 对话页输入框上方的后台任务状态条：运行中任务计数 + 点击展开逐条详情 + **实时输出 tail**（自动轮询，10 行滚动区）。经官方 `conversation.input.dock` 槽注册（与 queue/todo/goal 同族）。形态：官方 **bundle 插件**（`dsh.bundle` + dshClient 通道），0 patch。
