@@ -10,7 +10,7 @@ export default [
     clean: true,
   },
   {
-    name: '@dsh-external/dsh-task-status/client',
+    name: '@vlln/dsh-task-status/client',
     entry: { client: 'src/client/task-status.tsx' },
     outDir: 'lib',
     format: 'cjs',
@@ -20,7 +20,7 @@ export default [
     external: [/@deepseek-ai\/dsh-client-/, 'react', 'react-dom'],
     outputOptions: {
       entryFileNames: 'client.js',
-      banner: 'window.__ModuleLoader__.load({ id: "@dsh-external/dsh-task-status", factory: (require) => {',
+      banner: 'window.__ModuleLoader__.load({ id: "@vlln/dsh-task-status", factory: (require) => {',
       footer: 'return module.exports; } });',
       intro: 'var module = { exports: {} }; var exports = module.exports;',
     },
