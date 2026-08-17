@@ -1,11 +1,13 @@
 {
   "name": "@vlln/dsh-task-status",
   "description": "后台任务状态条——对话输入区上方的任务进度 UI（官方 dock 槽 + Node 轮询路由）",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "main": "lib/index.mjs",
+  "types": "lib/index.d.mts",
   "files": [
     "lib",
+    "src",
     "cordis.patch.yml"
   ],
   "publishConfig": {
@@ -40,7 +42,8 @@
     "dsh": ">=0.1.0-rc.5"
   },
   "scripts": {
-    "build": "tsdown --config ./tsdown.config.ts"
+    "build": "tsdown --config ./tsdown.config.ts",
+    "prepack": "npm run build"
   },
   "devDependencies": {
     "tsdown": "0.22.2"

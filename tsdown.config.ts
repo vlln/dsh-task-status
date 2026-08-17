@@ -8,6 +8,8 @@ export default [
     target: 'es2024',
     outDir: 'lib',
     clean: true,
+    // Node half 是 .mjs 纯 JS：dts 生成器不产出声明，改用手写 src/index.d.mts 随构建拷入。
+    copy: { from: 'src/index.d.mts', to: 'lib' },
   },
   {
     name: '@vlln/dsh-task-status/client',
