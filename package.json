@@ -8,7 +8,8 @@
   "files": [
     "lib",
     "src",
-    "cordis.patch.yml"
+    "cordis.patch.yml",
+    "README.zh.md"
   ],
   "publishConfig": {
     "access": "public"
