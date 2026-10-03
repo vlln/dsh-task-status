@@ -1,3 +1,5 @@
+> **已归档（2026-10-03）**：官方 web UI 已内置后台任务支持——[`@deepseek-ai/dsh-client-ui-jobs`](https://github.com/deepseek-ai/deepseek-harness)（web 组合默认含 `ui-jobs` 条目：会话头部的任务控件 + 可展开的流式输出面板，运行/已结束分组）。本插件经 `conversation.input.dock` 覆盖的是同一需求，故冻结本仓。
+
 <p align="center">中文 | <a href="README.md">English</a></p>
 
 <h1 align="center">task-status</h1>

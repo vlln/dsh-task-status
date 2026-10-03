@@ -1,3 +1,5 @@
+> **Archived（2026-10-03）.** The official web UI now ships background-job support — [`@deepseek-ai/dsh-client-ui-jobs`](https://github.com/deepseek-ai/deepseek-harness) (entry `ui-jobs` in the composed web profile: a session-header job control with expandable streaming output panels, running/settled sections). This plugin served the same need through `conversation.input.dock`, so the repository is frozen.
+
 <p align="center"><a href="README.zh.md">中文</a> | English</p>
 
 <h1 align="center">task-status</h1>
